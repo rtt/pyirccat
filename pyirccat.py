@@ -1,18 +1,17 @@
 # encoding: utf8
 import argparse
-from OpenSSL import SSL
-import socket
-import re
-from time import sleep
-import threading
 from Queue import Queue
+import re
+import socket
+import threading
+from time import sleep
+from OpenSSL import SSL
 
-# todo: upgrde to threaded server sockets
+# todo: upgrade to threaded server sockets
 # todo: signals to process to abort threads
 
 def verify_cb(conn, cert, errnum, depth, ok):
-    # This obviously has to be updated
-    print 'Got certificate: %s' % cert.get_subject()
+    #print 'Got certificate: %s' % cert.get_subject()
     return ok
 
 
@@ -21,6 +20,7 @@ class BindException(Exception):
 
 
 class IRCClient(object):
+    '''Simple IRC client - supports PRIVMSG, JOIN and QUIT commands'''
 
     def __init__(self, host, port, channel, nick, ssl_mode=False, password=None):
         self.host = host
@@ -31,39 +31,30 @@ class IRCClient(object):
         self.password = password
 
     def __repr__(self):
-        return '<IRCClient(%s:%s(%s) #%s nick=%s)>' % (
-            self.host, self.port,
+        return '<%s(%s:%s(%s) #%s nick=%s)>' % (
+            self.__class__.__name__, self.host, self.port,
             '(SSL)' if self.ssl_mode else '(Plain)',
             self.channel, self.nick,
         )
 
-    def _send(self, msg):
-        sleep(0.2)
+    def _send(self, msg, delay=True):
+        '''Internal send method to send a command to the irc server connection'''
+        if delay:
+            sleep(0.2)
+
         print '> %s' % msg
-        self._s.send(msg + '\n')
-
-    def received(self, msg):
-        print '< %s' % msg.strip()
-
-    def privmsg(self, channel, msg):
-        self._send('PRIVMSG #%s :%s' % (channel, msg))
-
-    def join(self, channel):
-        self._send('JOIN #%s' % self.channel)
-
-    def quit(self, msg=None):
-        q = 'QUIT' if not msg else 'QUIT :%s' % (msg,)
-        self._send(q)
+        self._s.send('%s\n' % (msg,))
 
     def connect(self):
         '''Connect to irc server'''
 
         if self.ssl_mode:
             ctx = SSL.Context(SSL.SSLv23_METHOD)
-            ctx.set_verify(SSL.VERIFY_PEER, verify_cb) # Demand a certificate
+            ctx.set_verify(SSL.VERIFY_PEER, verify_cb)
             self._s = SSL.Connection(ctx, socket.socket(socket.AF_INET, socket.SOCK_STREAM))
         else:
             self._s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
         self._s.connect((self.host, self.port))
 
         if self.password is not None:
@@ -73,7 +64,6 @@ class IRCClient(object):
         self._send('USER %s 8 * :foobar' % self.nick)
 
         while True:
-            # get data
             d = self._s.recv(2048)
 
             # NERP
@@ -85,14 +75,12 @@ class IRCClient(object):
 
             if 'End of MOTD' in d:
                 self.join(self.channel)
-                self.privmsg(self.channel, 'hi there...')
+                self.privmsg(self.channel, 'Bot active')
 
-            if 'PING' in d:
+            if 'PING :' in d:
                received = d.strip()
                pong = received.split(':')[1]
                self._send('PONG :%s' % pong)
-
-        print '[Done]'
 
     def parse_message(self, raw):
         r = re.match(r'#([\w\d_\-]+)\s{1}(.*)', raw)
@@ -102,20 +90,36 @@ class IRCClient(object):
         channel, msg = r.groups()
         return channel, msg
 
+    def received(self, msg):
+        print '< %s' % msg.strip()
+
     def send(self, d):
+        '''Sends a message to a channel
+        Expected format: "#channel message here"
+        '''
         parsed = self.parse_message(d)
+
         if parsed is not None:
             # message was valid
             channel, msg = parsed
-            print 'sending "%s" to #%s' % (msg, channel)
+            # send message to channel
             self.privmsg(channel, msg)
-        else:
-            print 'invalid msg'
+
+    # IRC commands
+
+    def privmsg(self, channel, msg):
+        self._send('PRIVMSG #%s :%s' % (channel, msg))
+
+    def join(self, channel):
+        self._send('JOIN #%s' % self.channel)
+
+    def quit(self, msg=None):
+        self._send('QUIT' if not msg else 'QUIT :%s' % (msg,))
 
 
 class Listener(object):
-    '''Listener object which listens on a host and port, and sends messages through
-    to a provided "conduit"
+    '''Listener which listens on a host and port for messages and shoves
+    said messages into a queue which the irc client consumes
     '''
 
     def __init__(self, bind_addr, bind_port, queue):
@@ -131,14 +135,14 @@ class Listener(object):
             self._s.close()
 
     def __exit__(self):
-        self._s.close()
+        if self._s:
+            self._s.close()
 
     def close(self):
         if self._s:
             self._s.close()
 
     def listen(self):
-
         try:
             self._s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
@@ -146,6 +150,7 @@ class Listener(object):
                 self._s.bind((self.bind_addr, self.bind_port))
             except socket.error:
                 em = 'Could not bind to host %s:%s' % (self.bind_addr, self.bind_port)
+
                 if self.bind_port < 1024:
                     em = '%s (port < 1024, privilege error?)' % em
 
@@ -153,19 +158,18 @@ class Listener(object):
 
             self._s.listen(1)
             conn, addr = self._s.accept()
+
             while True:
                 data = conn.recv(4096)
                 if not data:
                     break
-                # now pipe this to our receiver
-                print 'sending to conduit >>>'
+
+                # bump message onto queue
                 self.queue.put(data)
+
         except KeyboardInterrupt:
-            self.conduit.quit()
-            print 'Closing listener connection'
             self._s.close()
-            print 'Reraising...'
-            raise KeyboardInterrupt
+            raise
         except:
             raise
 
@@ -186,6 +190,7 @@ def cli_args():
 
 
 class IRCClientWorker(threading.Thread):
+
     def __init__(self, host, port, channel, nickname, queue, ssl_mode=False, password=None):
         threading.Thread.__init__(self)
 
@@ -203,8 +208,6 @@ class IRCClientWorker(threading.Thread):
             self.nickname, self.ssl_mode, self.password,
         )
 
-        print irc_client
-
         def irc_connect():
             irc_client.connect()
 
@@ -220,6 +223,7 @@ class IRCClientWorker(threading.Thread):
 
 
 class ListenerWorker(threading.Thread):
+
     def __init__(self, addr, port, queue):
         threading.Thread.__init__(self)
 
