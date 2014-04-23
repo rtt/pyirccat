@@ -5,10 +5,12 @@ import re
 import socket
 import threading
 from time import sleep
+from os import getpid
+
+# ext. dependencies
 from OpenSSL import SSL
 
 # todo: upgrade to threaded server sockets
-# todo: signals to process to abort threads
 
 def verify_cb(conn, cert, errnum, depth, ok):
     #print 'Got certificate: %s' % cert.get_subject()
@@ -127,6 +129,8 @@ class Listener(object):
         self.bind_port = bind_port
         self.queue = queue
 
+        self.backlog = 4
+
     def __repr__(self):
         return '<Listener(%s:%s)>' % (self.bind_addr, self.bind_port)
 
@@ -156,37 +160,28 @@ class Listener(object):
 
                 raise BindException(em)
 
-            self._s.listen(1)
-            conn, addr = self._s.accept()
+            self._s.listen(self.backlog)
 
             while True:
-                data = conn.recv(4096)
-                if not data:
-                    break
+                conn, addr = self._s.accept()
 
-                # bump message onto queue
-                self.queue.put(data)
+                def h_cnx():
+                    while True:
+                        data = conn.recv(4096)
+                        if not data:
+                            break
+
+                        # bump message onto queue
+                        self.queue.put(data)
+
+                t = threading.Thread(target=h_cnx)
+                t.start()
 
         except KeyboardInterrupt:
             self._s.close()
             raise
         except:
             raise
-
-
-def cli_args():
-    parser = argparse.ArgumentParser(description='pyirccat - cat to irc')
-    parser.add_argument('-s', '--server', dest='host', required=True, type=str, help='IRC Server hostname')
-    parser.add_argument('-p', '--port', dest='port', default=6667, type=int, help='IRC Server port')
-    parser.add_argument('--password', dest='password', type=str, help='IRC server password')
-    parser.add_argument('-n', '--nickname', dest='nickname', default='pyirccat', type=str, help='Nickname of bot')
-    parser.add_argument('-c', '--channel', dest='channel', required=True, type=str, help='Channel to join, without # prefix')
-    parser.add_argument('-ba', '--bind-addr', dest='bind_addr', required=True, type=str, help='IP to bind to')
-    parser.add_argument('-bp', '--bind-port', dest='bind_port', required=True, type=int, help='Port to bind to')
-    parser.add_argument('--ssl', dest='ssl', action='store_true', help='Join server via SSL')
-    parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Noisy mode')
-
-    return parser
 
 
 class IRCClientWorker(threading.Thread):
@@ -202,24 +197,35 @@ class IRCClientWorker(threading.Thread):
         self.password = password
         self.queue = queue
 
-    def run(self):
-        irc_client = IRCClient(
+        self._stop = threading.Event()
+
+        self.process = IRCClient(
             self.host, self.port, self.channel,
             self.nickname, self.ssl_mode, self.password,
         )
 
+    def stop(self):
+        self._stop.set()
+
+    def stopped(self):
+        return self._stop.isSet()
+
+    def run(self):
+
         def irc_connect():
-            irc_client.connect()
+            self.process.connect()
 
         t = threading.Thread(target=irc_connect)
         t.daemon = True
         t.start()
 
-        while True:
-            print 'sending items...'
+        while True and not self.stopped():
             item = self.queue.get()
-            irc_client.send(item)
-
+            if item is None:
+                # breaker, otherwise we can't kill the thread off
+                # as we'd sit here forever!
+                break
+            self.process.send(item)
 
 
 class ListenerWorker(threading.Thread):
@@ -231,29 +237,79 @@ class ListenerWorker(threading.Thread):
         self.port = port
         self.queue = queue
 
+        self._stop = threading.Event()
+
+        self.process = Listener(self.addr, self.port, self.queue)
+
+    def stop(self):
+        self._stop.set()
+
+    def stopped(self):
+        return self._stop.isSet()
+
     def run(self):
-        socket_listener = Listener(self.addr, self.port, self.queue)
-        print socket_listener
-        socket_listener.listen()
+
+        while True and not self.stopped():
+            try:
+                self.process.listen()
+            except BindException as e:
+                print 'Error: %s' % (e,)
+                self.stop()
+                break
+
+
+def cli_args():
+    '''Returns a prepared ArgumentParser'''
+
+    parser = argparse.ArgumentParser(description='pyirccat - cat to irc')
+    parser.add_argument('-s', '--server', dest='host', required=True, type=str,
+        help='IRC Server hostname')
+    parser.add_argument('-p', '--port', dest='port', default=6667, type=int,
+        help='IRC Server port')
+    parser.add_argument('--password', dest='password', type=str, help='IRC server password')
+    parser.add_argument('-n', '--nickname', dest='nickname', default='pyirccat', type=str,
+        help='Nickname of bot')
+    parser.add_argument('-c', '--channel', dest='channel', required=True, type=str,
+        help='Channel to join, without # prefix')
+    parser.add_argument('-ba', '--bind-addr', dest='bind_addr', required=True, type=str,
+        help='IP to bind to')
+    parser.add_argument('-bp', '--bind-port', dest='bind_port', required=True, type=int,
+        help='Port to bind to')
+    parser.add_argument('--ssl', dest='ssl', action='store_true', help='Join server via SSL')
+    parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Noisy mode')
+
+    return parser
 
 
 if __name__ == '__main__':
-    parser = cli_args().parse_args()
 
-    if parser.verbose:
-        print 'verbose mode'
+    parser = cli_args().parse_args()
 
     q = Queue()
 
-    t_irc = IRCClientWorker(parser.host, parser.port, parser.channel,
+    # create threads
+    t_irc = IRCClientWorker(
+        parser.host, parser.port, parser.channel,
         parser.nickname, q, parser.ssl, parser.password
     )
 
     t_listener = ListenerWorker(parser.bind_addr, parser.bind_port, q)
 
+    if parser.verbose:
+        print 'PID: %s' % (getpid(),)
+        print t_irc.process
+        print t_listener.process
+
+    # start them
     t_irc.start()
     t_listener.start()
 
-    # and sit and wait...
-    t_irc.join()
-    t_listener.join()
+    while True:
+        if not t_irc.isAlive() or not t_listener.isAlive():
+            q.put(None)
+            t_irc.stop()
+            t_listener.stop()
+            break
+
+    # we're done.
+    print 'Finished'
