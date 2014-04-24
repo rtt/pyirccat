@@ -3,6 +3,7 @@ import argparse
 from Queue import Queue
 import re
 import socket
+import sys
 import threading
 from time import sleep
 from os import getpid
@@ -10,7 +11,6 @@ from os import getpid
 # ext. dependencies
 from OpenSSL import SSL
 
-# todo: upgrade to threaded server sockets
 
 def verify_cb(conn, cert, errnum, depth, ok):
     #print 'Got certificate: %s' % cert.get_subject()
@@ -79,7 +79,7 @@ class IRCClient(object):
                 self.join(self.channel)
                 self.privmsg(self.channel, 'Bot active')
 
-            if 'PING :' in d:
+            if d.startswith('PING :'):
                received = d.strip()
                pong = received.split(':')[1]
                self._send('PONG :%s' % pong)
@@ -117,6 +117,7 @@ class IRCClient(object):
 
     def quit(self, msg=None):
         self._send('QUIT' if not msg else 'QUIT :%s' % (msg,))
+        self._s.close()
 
 
 class Listener(object):
@@ -134,54 +135,41 @@ class Listener(object):
     def __repr__(self):
         return '<Listener(%s:%s)>' % (self.bind_addr, self.bind_port)
 
-    def __enter__(self):
-        if self._s:
-            self._s.close()
-
-    def __exit__(self):
-        if self._s:
-            self._s.close()
 
     def close(self):
-        if self._s:
+        if hasattr(self, '_s'):
             self._s.close()
 
     def listen(self):
+
+        self._s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
         try:
-            self._s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self._s.bind((self.bind_addr, self.bind_port))
+        except socket.error:
+            em = 'Could not bind to host %s:%s' % (self.bind_addr, self.bind_port)
 
-            try:
-                self._s.bind((self.bind_addr, self.bind_port))
-            except socket.error:
-                em = 'Could not bind to host %s:%s' % (self.bind_addr, self.bind_port)
+            if self.bind_port < 1024:
+                em = '%s (port < 1024, privilege error?)' % em
 
-                if self.bind_port < 1024:
-                    em = '%s (port < 1024, privilege error?)' % em
+            raise BindException(em)
 
-                raise BindException(em)
+        self._s.listen(self.backlog)
 
-            self._s.listen(self.backlog)
+        while True:
+            conn, addr = self._s.accept()
 
-            while True:
-                conn, addr = self._s.accept()
+            def h_cnx():
+                while True:
+                    data = conn.recv(4096)
+                    if not data:
+                        break
 
-                def h_cnx():
-                    while True:
-                        data = conn.recv(4096)
-                        if not data:
-                            break
+                    # bump message onto queue
+                    self.queue.put(data)
 
-                        # bump message onto queue
-                        self.queue.put(data)
-
-                t = threading.Thread(target=h_cnx)
-                t.start()
-
-        except KeyboardInterrupt:
-            self._s.close()
-            raise
-        except:
-            raise
+            t = threading.Thread(target=h_cnx)
+            t.start()
 
 
 class IRCClientWorker(threading.Thread):
@@ -205,25 +193,28 @@ class IRCClientWorker(threading.Thread):
         )
 
     def stop(self):
+        self.process.quit()
         self._stop.set()
+
 
     def stopped(self):
         return self._stop.isSet()
 
     def run(self):
 
-        def irc_connect():
-            self.process.connect()
+        self.process.connect()
 
-        t = threading.Thread(target=irc_connect)
+        def irc_interact():
+            self.process.interact()
+
+        t = threading.Thread(target=irc_interact)
         t.daemon = True
         t.start()
 
         while True and not self.stopped():
             item = self.queue.get()
             if item is None:
-                # breaker, otherwise we can't kill the thread off
-                # as we'd sit here forever!
+                # none is a signal to quit
                 break
             self.process.send(item)
 
@@ -242,6 +233,7 @@ class ListenerWorker(threading.Thread):
         self.process = Listener(self.addr, self.port, self.queue)
 
     def stop(self):
+        self.process.close()
         self._stop.set()
 
     def stopped(self):
@@ -256,6 +248,43 @@ class ListenerWorker(threading.Thread):
                 print 'Error: %s' % (e,)
                 self.stop()
                 break
+
+
+class MainWorker(threading.Thread):
+    def __init__(self, parser):
+        threading.Thread.__init__(self)
+        self.parser = parser
+        self._stop = threading.Event()
+        self.threads = []
+
+    def stop(self):
+        self._stop.set()
+        for t in self.threads:
+            t.stop()
+
+    def stopped(self):
+        return self._stop.isSet()
+
+    def run(self):
+
+        q = Queue()
+
+        t_irc = IRCClientWorker(
+            self.parser.host, self.parser.port, self.parser.channel,
+            self.parser.nickname, q, self.parser.ssl, self.parser.password
+        )
+
+        t_listener = ListenerWorker(self.parser.bind_addr, self.parser.bind_port, q)
+
+        self.threads.append(t_irc)
+        self.threads.append(t_listener)
+
+        t_irc.daemon = True
+        t_listener.daemon = True
+
+        # start them
+        t_irc.start()
+        t_listener.start()
 
 
 def cli_args():
@@ -285,31 +314,17 @@ if __name__ == '__main__':
 
     parser = cli_args().parse_args()
 
-    q = Queue()
+    main_worker = MainWorker(parser)
+    main_worker.daemon = True
+    main_worker.start()
 
-    # create threads
-    t_irc = IRCClientWorker(
-        parser.host, parser.port, parser.channel,
-        parser.nickname, q, parser.ssl, parser.password
-    )
-
-    t_listener = ListenerWorker(parser.bind_addr, parser.bind_port, q)
-
-    if parser.verbose:
-        print 'PID: %s' % (getpid(),)
-        print t_irc.process
-        print t_listener.process
-
-    # start them
-    t_irc.start()
-    t_listener.start()
-
-    while True:
-        if not t_irc.isAlive() or not t_listener.isAlive():
-            q.put(None)
-            t_irc.stop()
-            t_listener.stop()
-            break
+    while not main_worker.stopped():
+        try:
+            sleep(0.1)
+            x = [main_worker.join(1.0) for x in range(1) if main_worker.isAlive()]
+        except KeyboardInterrupt:
+            main_worker.stop()
+            sys.exit(0)
 
     # we're done.
-    print 'Finished'
+    print 'Finished!'
