@@ -32,6 +32,8 @@ class IRCClient(object):
         self.ssl_mode = ssl_mode
         self.password = password
 
+        self._connected = False
+
     def __repr__(self):
         return '<%s(%s:%s(%s) #%s nick=%s)>' % (
             self.__class__.__name__, self.host, self.port,
@@ -41,6 +43,9 @@ class IRCClient(object):
 
     def _send(self, msg, delay=True):
         '''Internal send method to send a command to the irc server connection'''
+        if not self._connected:
+            return
+
         if delay:
             sleep(0.2)
 
@@ -58,26 +63,41 @@ class IRCClient(object):
             self._s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
         self._s.connect((self.host, self.port))
+        self._connected = True
 
         if self.password is not None:
             self._send('PASS %s' % self.password)
 
+        # send nick and user commands, then join the channel and announce presence
         self._send('NICK %s' % self.nick)
         self._send('USER %s 8 * :foobar' % self.nick)
 
-        while True:
-            d = self._s.recv(2048)
+        self.join(self.channel)
+        self.privmsg(self.channel, 'Bot active')
 
-            # NERP
-            if not d:
+
+        print 'ready for interact'
+
+    def interact(self):
+        '''
+        Interact indefinitely with the irc server after connection
+        Currently essentially all this does is report data received from the server
+        and replies to ping requests
+        '''
+        print 'interact'
+
+        while self._connected:
+            try:
+                d = self._s.recv(2048)
+            except:
                 break
+            else:
+                if not d:
+                    break
 
             for l in d.strip().split('\n'):
+                # report what we got
                 self.received(l)
-
-            if 'End of MOTD' in d:
-                self.join(self.channel)
-                self.privmsg(self.channel, 'Bot active')
 
             if d.startswith('PING :'):
                received = d.strip()
@@ -85,10 +105,15 @@ class IRCClient(object):
                self._send('PONG :%s' % pong)
 
     def parse_message(self, raw):
-        r = re.match(r'#([\w\d_\-]+)\s{1}(.*)', raw)
-        if r is None:
+        '''Parses a message to work out if it was channel prefixed or not '''
+        if not raw:
             return None
 
+        r = re.match(r'#([\w\d_\-]+)\s{1}(.*)', raw)
+        if r is None:
+            return self.channel, raw
+
+        # we wanted it sent to some other channel
         channel, msg = r.groups()
         return channel, msg
 
@@ -116,6 +141,7 @@ class IRCClient(object):
         self._send('JOIN #%s' % self.channel)
 
     def quit(self, msg=None):
+        self._connected = False
         self._send('QUIT' if not msg else 'QUIT :%s' % (msg,))
         self._s.close()
 
@@ -125,15 +151,14 @@ class Listener(object):
     said messages into a queue which the irc client consumes
     '''
 
-    def __init__(self, bind_addr, bind_port, queue):
+    def __init__(self, bind_addr, bind_port, queue, backlog=4):
         self.bind_addr = bind_addr
         self.bind_port = bind_port
         self.queue = queue
-
-        self.backlog = 4
+        self.backlog = backlog
 
     def __repr__(self):
-        return '<Listener(%s:%s)>' % (self.bind_addr, self.bind_port)
+        return '<%s(%s:%s)>' % (self.__class__.__name__, self.bind_addr, self.bind_port)
 
 
     def close(self):
@@ -196,14 +221,17 @@ class IRCClientWorker(threading.Thread):
         self.process.quit()
         self._stop.set()
 
-
     def stopped(self):
         return self._stop.isSet()
 
     def run(self):
+        # connect to server
+        try:
+            self.process.connect()
+        except socket.error:
+            return
 
-        self.process.connect()
-
+        # spin the interaction off into a thread
         def irc_interact():
             self.process.interact()
 
@@ -211,6 +239,7 @@ class IRCClientWorker(threading.Thread):
         t.daemon = True
         t.start()
 
+        # send items in the queue off to be processed
         while True and not self.stopped():
             item = self.queue.get()
             if item is None:
@@ -240,7 +269,6 @@ class ListenerWorker(threading.Thread):
         return self._stop.isSet()
 
     def run(self):
-
         while True and not self.stopped():
             try:
                 self.process.listen()
@@ -286,6 +314,11 @@ class MainWorker(threading.Thread):
         t_irc.start()
         t_listener.start()
 
+        while True:
+            # if either thread quits, stop everything
+            sleep(0.25)
+            if t_listener.stopped() or t_irc.stopped():
+                self.stop()
 
 def cli_args():
     '''Returns a prepared ArgumentParser'''
