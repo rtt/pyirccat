@@ -59,6 +59,14 @@ You can also prefix output with an arbitary channel to send to, e.g. -
 
 (would send to #someotherchannel even if you invoked the bot with a channel other than #someotherchannel)
 
+#### Installation
+
+Just make sure you've pyOpenSSL available, and it will be good to go on python 2.7+. Included is a pip requirements file which can be used via:
+
+```bash
+> pip install -r requirements.txt
+```
+
 
 ### When?
 
