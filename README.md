@@ -1,4 +1,4 @@
-pyirccat
+pyirccat - python irccat
 ========
 
 ### What?
@@ -7,7 +7,7 @@ pyirccat is a self contained <a href="https://github.com/RJ/irccat">irccat</a> c
 
 ### Why?
 
-First, irccat doesn't support SSL enabled IRC servers, which if your IRC servers are SSL only presents a bit of a problem. Second, other irccat clones usually have some dependency on a big external IRC/networking library (<a href="https://twistedmatrix.com/trac/">twisted</a>, <a href="http://python-irclib.sourceforge.net/">irclib</a> various others) and I just wanted something simple and lightweight which is trivially installed. pyirccat's only external dependency is <a href="https://github.com/pyca/pyopenssl">pyOpenSSL</a> (which is fair enough, right?)
+First, irccat doesn't support SSL enabled IRC servers, which if your IRC servers are SSL only presents a bit of a problem. Second, other irccat clones usually have some dependency on a big external IRC/networking library (<a href="https://twistedmatrix.com/trac/">twisted</a>, <a href="http://python-irclib.sourceforge.net/">irclib</a> and various others) and I just wanted something simple and lightweight which is trivially installed. pyirccat's only external dependency is <a href="https://github.com/pyca/pyopenssl">pyOpenSSL</a> (which is fair enough, right?)
 
 ### How?
 
