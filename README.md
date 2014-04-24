@@ -3,11 +3,11 @@ pyirccat
 
 ### What?
 
-pyirccat is a self contained <a href="https://github.com/RJ/irccat">irccat</a> clone written in Python. It was primarily developed for use at <a href="http://www.lovestruck.com/">Lovestruck.com</a> which uses IRC extensively. Pull requests welcome!
+pyirccat is a self contained <a href="https://github.com/RJ/irccat">irccat</a> clone written in Python. It was primarily developed for use at <a href="http://www.lovestruck.com/">Lovestruck.com</a> which uses IRC extensively for logging and reporting various things from servers back to IRC. Pull requests, comments etc are welcome.
 
 ### Why?
 
-First, irccat doesn't support SSL enabled IRC servers, which if your IRC servers are SSL only, is a bit of a problem. Second, other irccat clones usually have some dependency on a big external IRC/networking library (twisted, various others) and I just wanted something simple and lightweight which is trivially installed. pyirccat's only external dependency is <a href="">pyOpenSSL</a> (which is fair enough, right?)
+First, irccat doesn't support SSL enabled IRC servers, which if your IRC servers are SSL only presents a bit of a problem. Second, other irccat clones usually have some dependency on a big external IRC/networking library (<a href="https://twistedmatrix.com/trac/">twisted</a>, <a href="http://python-irclib.sourceforge.net/">irclib</a> various others) and I just wanted something simple and lightweight which is trivially installed. pyirccat's only external dependency is <a href="https://github.com/pyca/pyopenssl">pyOpenSSL</a> (which is fair enough, right?)
 
 ### How?
 
@@ -51,11 +51,14 @@ then send some data to it (telnet, netcat, whatever - examples shown use netcat)
 > tail -f /var/log/www/error.log | netcat localhost 4444
 ```
 
-... the output will go directly to the channel you've specified when running pyirccat.py!
+You can also prefix output with an arbitary channel to send to, e.g. -
 
+```bash
+> echo "#someotherchannel foo" | netcat -q0 localhost 4444
 ```
-[14:13:25] mybotnickname: Hello World
-```
+
+(would send to #someotherchannel even if you invoked the bot with a channel other than #someotherchannel)
+
 
 ### When?
 
