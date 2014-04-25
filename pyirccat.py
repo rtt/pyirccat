@@ -13,31 +13,33 @@ from OpenSSL import SSL
 
 
 def verify_cb(conn, cert, errnum, depth, ok):
-    #print 'Got certificate: %s' % cert.get_subject()
     return ok
 
 
 class BindException(Exception):
+    '''Thrown when we cant listen on a given ip:port'''
     pass
 
 
 class IRCClient(object):
     '''Simple IRC client - supports PRIVMSG, JOIN and QUIT commands'''
 
-    def __init__(self, host, port, channel, nick, ssl_mode=False, password=None):
+    def __init__(self, host, port, channel, nick, ssl_mode=False, ssl_no_verify=False, password=None):
         self.host = host
         self.port = port
         self.channel = channel
         self.nick = nick
         self.ssl_mode = ssl_mode
+        self.ssl_no_verify = ssl_no_verify
         self.password = password
 
         self._connected = False
+        self.realname = 'pyirccat'
 
     def __repr__(self):
-        return '<%s(%s:%s(%s) #%s nick=%s)>' % (
+        return '<%s(%s:%s(%s) channel=#%s nick=%s)>' % (
             self.__class__.__name__, self.host, self.port,
-            '(SSL)' if self.ssl_mode else '(Plain)',
+            '(SSL, %s)' % ('non-verified' if self.ssl_no_verify else 'verified') if self.ssl_mode else '(Plain)',
             self.channel, self.nick,
         )
 
@@ -46,6 +48,8 @@ class IRCClient(object):
         if not self._connected:
             return
 
+        # we delay most messages in some vein attempt
+        # not to flood an ircd
         if delay:
             sleep(0.2)
 
@@ -57,11 +61,13 @@ class IRCClient(object):
 
         if self.ssl_mode:
             ctx = SSL.Context(SSL.SSLv23_METHOD)
-            ctx.set_verify(SSL.VERIFY_PEER, verify_cb)
+            if not self.ssl_no_verify:
+                ctx.set_verify(SSL.VERIFY_PEER, verify_cb)
             self._s = SSL.Connection(ctx, socket.socket(socket.AF_INET, socket.SOCK_STREAM))
         else:
             self._s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
+        # note; calling code is expected to deal with a thrown socket.error
         self._s.connect((self.host, self.port))
         self._connected = True
 
@@ -70,13 +76,10 @@ class IRCClient(object):
 
         # send nick and user commands, then join the channel and announce presence
         self._send('NICK %s' % self.nick)
-        self._send('USER %s 8 * :foobar' % self.nick)
+        self._send('USER %s 8 * :%s' % (self.nick, self.realname))
 
         self.join(self.channel)
         self.privmsg(self.channel, 'Bot active')
-
-
-        print 'ready for interact'
 
     def interact(self):
         '''
@@ -84,7 +87,6 @@ class IRCClient(object):
         Currently essentially all this does is report data received from the server
         and replies to ping requests
         '''
-        print 'interact'
 
         while self._connected:
             try:
@@ -96,13 +98,13 @@ class IRCClient(object):
                     break
 
             for l in d.strip().split('\n'):
-                # report what we got
                 self.received(l)
 
             if d.startswith('PING :'):
-               received = d.strip()
-               pong = received.split(':')[1]
-               self._send('PONG :%s' % pong)
+                try:
+                    self._send('PONG :%s' % (d.strip().split(':')[1],))
+                except:
+                    print '[error PONG]'
 
     def parse_message(self, raw):
         '''Parses a message to work out if it was channel prefixed or not '''
@@ -133,7 +135,7 @@ class IRCClient(object):
             self.privmsg(channel, msg)
 
     # IRC commands
-
+    # see RFC2812: https://tools.ietf.org/html/rfc2812
     def privmsg(self, channel, msg):
         self._send('PRIVMSG #%s :%s' % (channel, msg))
 
@@ -192,6 +194,9 @@ class Listener(object):
 
                     # bump message onto queue
                     self.queue.put(data)
+                    break
+
+                conn.close()
 
             t = threading.Thread(target=h_cnx)
             t.start()
@@ -199,7 +204,7 @@ class Listener(object):
 
 class IRCClientWorker(threading.Thread):
 
-    def __init__(self, host, port, channel, nickname, queue, ssl_mode=False, password=None):
+    def __init__(self, host, port, channel, nickname, queue, ssl_mode=False, ssl_verify=True, password=None):
         threading.Thread.__init__(self)
 
         self.host = host
@@ -207,6 +212,7 @@ class IRCClientWorker(threading.Thread):
         self.channel = channel
         self.nickname = nickname
         self.ssl_mode = ssl_mode
+        self.ssl_verify = ssl_verify
         self.password = password
         self.queue = queue
 
@@ -214,7 +220,7 @@ class IRCClientWorker(threading.Thread):
 
         self.process = IRCClient(
             self.host, self.port, self.channel,
-            self.nickname, self.ssl_mode, self.password,
+            self.nickname, self.ssl_mode, self.ssl_verify, self.password,
         )
 
     def stop(self):
@@ -299,7 +305,8 @@ class MainWorker(threading.Thread):
 
         t_irc = IRCClientWorker(
             self.parser.host, self.parser.port, self.parser.channel,
-            self.parser.nickname, q, self.parser.ssl, self.parser.password
+            self.parser.nickname, q, self.parser.ssl, self.parser.ssl_no_verify,
+            self.parser.password
         )
 
         t_listener = ListenerWorker(self.parser.bind_addr, self.parser.bind_port, q)
@@ -338,6 +345,8 @@ def cli_args():
     parser.add_argument('-bp', '--bind-port', dest='bind_port', required=True, type=int,
         help='Port to bind to')
     parser.add_argument('--ssl', dest='ssl', action='store_true', help='Join server via SSL')
+    parser.add_argument('--ssl-no-verify', dest='ssl_no_verify', action='store_true',
+        help='Disable SSL cert verification')
     parser.add_argument('-v', '--verbose', dest='verbose', action='store_true', help='Noisy mode')
 
     return parser
