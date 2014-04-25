@@ -35,6 +35,7 @@ optional arguments:
   -bp BIND_PORT, --bind-port BIND_PORT
                         Port to bind to
   --ssl                 Join server via SSL
+  --ssl-no-verify       Disable SSL cert verification
   -v, --verbose         Noisy mode
 ```
 
