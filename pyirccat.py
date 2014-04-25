@@ -285,6 +285,7 @@ class ListenerWorker(threading.Thread):
 
 
 class MainWorker(threading.Thread):
+
     def __init__(self, parser):
         threading.Thread.__init__(self)
         self.parser = parser
