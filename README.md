@@ -7,8 +7,7 @@ pyirccat is a self contained <a href="https://github.com/RJ/irccat">irccat</a> c
 
 ### Why?
 
-First, irccat doesn't support SSL enabled IRC servers, which if your IRC servers are <a href="http://i.imgur.com/Wr6Sh6S.png">SSL only</a> presents a bit of a problem. Second, other irccat clones usually have some dependency on a big external IRC/networking library (<a href="https://twistedmatrix.com/trac/">twisted</a>, <a href="http://python-irclib.sourceforge.net/">irclib</a> and various others) and I just wanted something simple and lightweight which is trivially installed -- Lovestruck was rolling a JRE in production just to support catting things back to IRC, which seemed a bit silly. Third, because I'm the kind of idiot who enjoys being subjected to sockets programming and <a href="https://twitter.com/davidlohr/status/288786300067270656">threads</a>
-pyirccat's only external dependency is <a href="https://github.com/pyca/pyopenssl">pyOpenSSL</a> (which is fair enough, right?)
+First, irccat doesn't support SSL enabled IRC servers, which if your IRC servers are <a href="http://i.imgur.com/Wr6Sh6S.png">SSL only</a> presents a bit of a problem. Second, other irccat clones usually have some dependency on a big external IRC/networking library (<a href="https://twistedmatrix.com/trac/">twisted</a>, <a href="http://python-irclib.sourceforge.net/">irclib</a> and various others) and I just wanted something simple and lightweight which is trivially installed -- Lovestruck was rolling a JRE in production just to support catting things back to IRC, which seemed a bit silly. Third, because I'm the kind of idiot who enjoys being subjected to sockets programming and <a href="https://twitter.com/davidlohr/status/288786300067270656">threads</a>. pyirccat's only external dependency is <a href="https://github.com/pyca/pyopenssl">pyOpenSSL</a> (which is fair enough, right?)
 
 ### How?
 
@@ -62,11 +61,13 @@ You can also prefix output with an arbitary channel to send to, e.g. -
 
 #### Installation
 
-Just make sure you've pyOpenSSL available, and it will be good to go on python 2.7+. Included is a pip requirements file which can be used via:
+Just make sure you've pyOpenSSL available, and it will be good to go on python 2.7+. Included is a pip requirements file which can be used via
 
 ```bash
 > pip install -r requirements.txt
 ```
+
+You'll probably need <a href="http://sourceware.org/libffi/">libffi</a> in order to install pyopenssl (most linux package managers will have it readily available)
 
 
 ### When?
