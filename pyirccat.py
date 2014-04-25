@@ -363,7 +363,7 @@ if __name__ == '__main__':
     while not main_worker.stopped():
         try:
             sleep(0.1)
-            x = [main_worker.join(1.0) for x in range(1) if main_worker.isAlive()]
+            main_worker.join(1.0)
         except KeyboardInterrupt:
             main_worker.stop()
             sys.exit(0)
